@@ -117,3 +117,54 @@ class Gamma(ExponentialFamily):
         if self._validate_args:
             self._validate_sample(value)
         return torch.special.gammainc(self.concentration, self.rate * value)
+
+    def icdf(self, value):
+        value = torch.as_tensor(value, dtype=self.rate.dtype, device=self.rate.device)
+        concentration, value = broadcast_all(self.concentration, value)
+        finfo = torch.finfo(value.dtype)
+        # No inverse-incomplete-gamma op exists, so invert the CDF numerically.
+        with torch.no_grad():
+            q = value.clamp(min=finfo.tiny, max=1 - finfo.eps)
+            z = torch.special.ndtri(q)
+            c = (9 * concentration).reciprocal()
+            w = 1 - c + z * c.sqrt()
+            y = torch.where(
+                w > 0,
+                concentration * w.pow(3),
+                ((q.log() + torch.lgamma(concentration + 1)) / concentration).exp(),
+            ).clamp(min=finfo.tiny)
+            lo = torch.zeros_like(y)
+            hi = y.clone()
+            for _ in range(64):  # grow hi until [lo, hi] brackets the root
+                bracketed = torch.special.gammainc(concentration, hi) >= q
+                if bool(bracketed.all()):
+                    break
+                hi = torch.where(~bracketed, 2 * hi, hi)
+            for _ in range(100):  # safeguarded Newton: bisect if the step escapes
+                g = torch.special.gammainc(concentration, y) - q
+                lo = torch.where(g < 0, y, lo)
+                hi = torch.where(g > 0, y, hi)
+                pdf = (
+                    (concentration - 1) * y.log() - y - torch.lgamma(concentration)
+                ).exp()
+                newton = y - g / pdf
+                outside = (newton <= lo) | (newton >= hi) | ~torch.isfinite(newton)
+                y_next = torch.where(outside, (lo + hi) / 2, newton)
+                if bool(((y_next - y).abs() <= finfo.eps * y_next).all()):
+                    y = y_next
+                    break
+                y = y_next
+
+        # Reattach gradients after the no_grad solve with a straight-through surrogate.
+        conc = concentration.detach()
+        log_pdf = (conc - 1) * y.log() - y - torch.lgamma(conc)
+        pdf = log_pdf.exp().clamp(min=finfo.tiny)
+        shape_grad = torch._standard_gamma_grad(conc, y)
+        value_term = (value - value.detach()) / pdf
+        conc_term = (concentration - concentration.detach()) * shape_grad
+        y = y + value_term + conc_term
+        x = y / self.rate
+        x = torch.where(value == 0, torch.zeros_like(x), x)
+        x = torch.where(value == 1, torch.full_like(x, float("inf")), x)
+        x = torch.where((value < 0) | (value > 1), torch.full_like(x, float("nan")), x)
+        return x

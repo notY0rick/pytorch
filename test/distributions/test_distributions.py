@@ -4823,6 +4823,33 @@ class TestRsample(DistributionsTestCase):
                 ),
             )
 
+    def test_gamma_icdf_grad(self):
+        # icdf is differentiable in value (q), concentration, and rate via the
+        # implicit-function-theorem reattachment (shape grad = _standard_gamma_grad).
+        # Forward correctness is covered by test_cdf_icdf_inverse and test_icdf.
+        value = torch.tensor(
+            [0.05, 0.3, 0.6, 0.95], dtype=torch.double, requires_grad=True
+        )
+        concentration = torch.tensor(
+            [0.4, 1.0, 3.0, 8.0], dtype=torch.double, requires_grad=True
+        )
+        rate = torch.tensor(
+            [0.5, 1.0, 2.0, 4.0], dtype=torch.double, requires_grad=True
+        )
+        self.assertTrue(
+            gradcheck(lambda v, c, r: Gamma(c, r).icdf(v), (value, concentration, rate))
+        )
+
+    def test_gamma_icdf_edge_cases(self):
+        d = Gamma(
+            torch.tensor(2.0, dtype=torch.double),
+            torch.tensor(1.5, dtype=torch.double),
+        )
+        x = d.icdf(torch.tensor([0.0, 1.0, -0.1, 1.1], dtype=torch.double))
+        self.assertEqual(x[0].item(), 0.0)  # q = 0 -> 0
+        self.assertTrue(torch.isposinf(x[1]))  # q = 1 -> +inf
+        self.assertTrue(x[2:].isnan().all())  # q outside [0, 1] -> nan
+
     @unittest.skipIf(not TEST_NUMPY, "NumPy not found")
     def test_chi2(self):
         num_samples = 100
