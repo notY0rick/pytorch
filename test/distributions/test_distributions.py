@@ -4267,6 +4267,29 @@ class TestDistributions(DistributionsTestCase):
                     ),
                 )
 
+    @expectedFailureMPS  # Gamma.icdf uses special_ndtri, which has no MPS kernel
+    def test_gamma_icdf_boundary(self):
+        # Boundary quantiles map to the Gamma support endpoints [0, inf).
+        for dtype in (torch.float32, torch.float64):
+            d = Gamma(torch.tensor(2.0, dtype=dtype), torch.tensor(1.5, dtype=dtype))
+            self.assertEqual(
+                d.icdf(torch.tensor(0.0, dtype=dtype)),
+                torch.tensor(0.0, dtype=dtype),
+            )
+            self.assertEqual(
+                d.icdf(torch.tensor(1.0, dtype=dtype)),
+                torch.tensor(inf, dtype=dtype),
+            )
+            # per-element boundaries within a batch stay independent
+            self.assertEqual(
+                d.icdf(torch.tensor([0.0, 1.0], dtype=dtype)),
+                torch.tensor([0.0, inf], dtype=dtype),
+            )
+            # quantiles outside [0, 1] are nan
+            self.assertTrue(
+                d.icdf(torch.tensor([-0.1, 1.1], dtype=dtype)).isnan().all()
+            )
+
     @unittest.skipIf(not TEST_NUMPY, "NumPy not found")
     def test_gamma_log_prob_at_boundary(self):
         for concentration, log_prob in [(0.5, inf), (1, 0), (2, -inf)]:
@@ -4839,16 +4862,6 @@ class TestRsample(DistributionsTestCase):
         self.assertTrue(
             gradcheck(lambda v, c, r: Gamma(c, r).icdf(v), (value, concentration, rate))
         )
-
-    def test_gamma_icdf_edge_cases(self):
-        d = Gamma(
-            torch.tensor(2.0, dtype=torch.double),
-            torch.tensor(1.5, dtype=torch.double),
-        )
-        x = d.icdf(torch.tensor([0.0, 1.0, -0.1, 1.1], dtype=torch.double))
-        self.assertEqual(x[0].item(), 0.0)  # q = 0 -> 0
-        self.assertTrue(torch.isposinf(x[1]))  # q = 1 -> +inf
-        self.assertTrue(x[2:].isnan().all())  # q outside [0, 1] -> nan
 
     @unittest.skipIf(not TEST_NUMPY, "NumPy not found")
     def test_chi2(self):
